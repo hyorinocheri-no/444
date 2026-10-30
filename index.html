@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Учет платежей</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1d2330;--mut:#6b7385;--ac:#2563eb;--bd:#dde1e8;--ok:#15803d;--er:#b91c1c;--wn:#b45309}
+@media(prefers-color-scheme:dark){:root{--bg:#12151c;--card:#1b202b;--tx:#e8eaf0;--mut:#9aa3b5;--ac:#5b8cff;--bd:#2c3342;--ok:#4ade80;--er:#f87171;--wn:#fbbf24}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,Arial,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:20px}h1{font-size:22px}h2{font-size:17px;margin:0 0 10px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:16px;margin-bottom:16px}
+button{background:var(--ac);color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer;font:inherit}
+button.s{background:transparent;color:var(--ac);border:1px solid var(--ac)}button:disabled{opacity:.4;cursor:default}
+input,select{font:inherit;padding:6px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.map{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin:10px 0}
+.map label{font-size:13px;color:var(--mut);display:flex;flex-direction:column;gap:2px}
+.tw{overflow-x:auto;max-height:340px;overflow-y:auto}table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:5px 8px;border-bottom:1px solid var(--bd);text-align:left;white-space:nowrap}th{position:sticky;top:0;background:var(--card)}
+.st{display:flex;gap:18px;flex-wrap:wrap;margin:10px 0}.st b{font-size:20px;display:block}.ok{color:var(--ok)}.er{color:var(--er)}.wn{color:var(--wn)}.mut{color:var(--mut);font-size:13px}
+</style></head><body><main>
+<h1>Автоматизация учета платежей</h1>
+<p class="mut">Все данные обрабатываются в вашем браузере и никуда не отправляются. История хранится в этом браузере.</p>
+
+<div class="card"><h2>1. Источник данных</h2>
+<div class="row"><label>Банковская выписка (Excel / CSV)<br><input type="file" id="f1" accept=".xlsx,.xls,.csv"></label>
+<label>Существующий Excel-файл учета (необязательно)<br><input type="file" id="f2" accept=".xlsx,.xls"></label></div>
+<div class="row" style="margin-top:8px"><label>Название источника (банк) <input id="src" placeholder="напр. Kaspi Bank"></label>
+<label>Счет получателя <input id="acc" placeholder="если нет в выписке"></label></div>
+<div class="map" id="map"></div>
+<div class="row"><button id="go" disabled>Обработать</button><span class="mut" id="info"></span></div></div>
+
+<div class="card" id="res" hidden><h2>2. Результат проверки</h2>
+<div class="st"><div><b class="ok" id="n1">0</b>новых</div><div><b class="wn" id="n2">0</b>дублей</div><div><b class="er" id="n3">0</b>с ошибками</div></div>
+<div class="tw"><table id="tb"></table></div>
+<div class="row" style="margin-top:10px"><button id="add" disabled>Добавить новые в историю</button><button class="s" id="xl" disabled>Скачать Excel с новыми платежами</button></div></div>
+
+<div class="card"><h2>3. Отчет за период</h2>
+<div class="row"><label>С <input type="date" id="d1"></label><label>По <input type="date" id="d2"></label><button id="rep">Сформировать</button>
+<button class="s" id="rx">Скачать отчет в Excel</button><button class="s" id="hx">Скачать историю</button><button class="s" id="hc">Очистить историю</button></div>
+<div class="mut" id="hinfo" style="margin-top:6px"></div><div class="tw" style="margin-top:8px"><table id="rt"></table></div></div>
+</main>
+<script>
+const F=[['date','Дата платежа',['дата']],['id','Номер операции',['номер','№','id','документ']],['payer','Плательщик',['плательщик','отправитель','контрагент']],['iin','ИИН/БИН',['иин','бин','инн']],['purpose','Назначение платежа',['назначение','описание']],['amount','Сумма',['сумма','кредит','приход']],['currency','Валюта',['валюта']],['account','Счет получателя',['счет','iban','получател']],['source','Источник',['источник','банк']]];
+const $=i=>document.getElementById(i);let H=[],R=[],reg=null,out={n:[],d:[],e:[]},repRows=[];
+const LS='pay_history';
+function hist(){try{return JSON.parse(localStorage.getItem(LS)||'[]')}catch(e){return window._h||[]}}
+function save(h){try{localStorage.setItem(LS,JSON.stringify(h))}catch(e){window._h=h}}
+const wb=async f=>XLSX.read(await f.arrayBuffer(),{type:'array',cellDates:true,raw:f.name.endsWith('.csv')?false:undefined});
+function table(w){const s=w.Sheets[w.SheetNames[0]],a=XLSX.utils.sheet_to_json(s,{header:1,defval:'',raw:true});
+ const i=a.findIndex(r=>r.filter(x=>String(x).trim()!=='').length>=3);if(i<0)return{h:[],r:[]};
+ return{h:a[i].map(x=>String(x).trim()),r:a.slice(i+1).filter(r=>r.some(x=>String(x).trim()!==''))}}
+function detect(h,k){const n=F.find(f=>f[0]===k)[2];for(const w of n){const j=h.findIndex(x=>x.toLowerCase().includes(w));if(j>=0)return j}return -1}
+$('f1').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const t=table(await wb(f));H=t.h;R=t.r;
+ $('map').innerHTML=F.map(([k,l])=>{const d=detect(H,k);return`<label>${l}<select data-k="${k}"><option value="-1">— не используется —</option>${H.map((h,j)=>`<option value="${j}"${j===d?' selected':''}>${h||'(без названия)'}</option>`).join('')}</select></label>`}).join('');
+ $('go').disabled=!R.length;$('info').textContent=`Найдено строк: ${R.length}. Проверьте сопоставление колонок.`}catch(x){$('info').textContent='Не удалось прочитать файл: '+x.message}};
+$('f2').onchange=async e=>{const f=e.target.files[0];reg=null;if(!f)return;try{const w=await wb(f);reg={w,t:table(w)};$('info').textContent=`Файл учета загружен: ${reg.t.r.length} записей.`}catch(x){$('info').textContent='Ошибка файла учета: '+x.message}};
+function pd(v){if(v instanceof Date&&!isNaN(v))return fmt(new Date(Date.UTC(v.getFullYear(),v.getMonth(),v.getDate())));
+ if(typeof v==='number'&&v>20000&&v<80000)return fmt(new Date(Math.round((v-25569)*864e5)));
+ const s=String(v).trim();let m=s.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})/);if(m)return`${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+ m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);return m?m[0]:null}
+const fmt=d=>d.toISOString().slice(0,10);
+function pa(v){if(typeof v==='number')return v;const s=String(v).replace(/\s|\u00a0/g,'').replace(',','.');return s!==''&&!isNaN(s)?parseFloat(s):null}
+const key=r=>r.id?'id:'+r.id:'x:'+[r.date,r.amount,r.payer].join('|');
+$('go').onclick=()=>{const m={};document.querySelectorAll('#map select').forEach(s=>m[s.dataset.k]=+s.value);
+ const known=new Set(hist().map(key));
+ if(reg){const rm={};F.forEach(([k])=>rm[k]=detect(reg.t.h,k));reg.t.r.forEach(r=>{const o={};F.forEach(([k])=>{const j=rm[k];o[k]=j>=0?String(r[j]).trim():''});
+  const d=pd(r[rm.date]);if(d)o.date=d;const a=pa(r[rm.amount]);if(a!==null)o.amount=a;known.add(key(o))})}
+ out={n:[],d:[],e:[]};
+ R.forEach((r,i)=>{const o={};F.forEach(([k])=>{const j=m[k];o[k]=j>=0&&r[j]!==''?r[j]:''});
+  const errs=[],d=pd(o.date),a=pa(o.amount);if(!d)errs.push('дата');if(a===null)errs.push('сумма');else if(a<=0)errs.push('сумма ≤ 0');
+  o.date=d||'';o.amount=a===null?'':a;o.id=String(o.id).trim();['payer','iin','purpose','currency'].forEach(k=>o[k]=String(o[k]).trim());
+  o.account=String(o.account||$('acc').value).trim();o.source=String(o.source||$('src').value).trim();o._row=i+2;
+  if(errs.length){o._why='Ошибка: '+errs.join(', ');out.e.push(o);return}
+  const k=key(o);if(known.has(k)){o._why='Дубль';out.d.push(o)}else{known.add(k);out.n.push(o)}});
+ $('res').hidden=false;$('n1').textContent=out.n.length;$('n2').textContent=out.d.length;$('n3').textContent=out.e.length;
+ const all=[...out.n.map(o=>[o,'Новый']),...out.d.map(o=>[o,o._why]),...out.e.map(o=>[o,o._why])];
+ $('tb').innerHTML='<tr><th>Статус</th>'+F.map(f=>`<th>${f[1]}</th>`).join('')+'</tr>'+all.slice(0,500).map(([o,s])=>`<tr><td class="${s==='Новый'?'ok':s==='Дубль'?'wn':'er'}">${s}</td>`+F.map(f=>`<td>${String(o[f[0]]).slice(0,60)}</td>`).join('')+'</tr>').join('');
+ $('add').disabled=$('xl').disabled=!out.n.length};
+const rowsOut=a=>a.map(o=>Object.fromEntries(F.map(([k,l])=>[l,o[k]])));
+$('add').onclick=()=>{const h=hist().concat(out.n.map(o=>{const c={...o};delete c._row;delete c._why;return c}));save(h);$('add').disabled=true;$('info').textContent=`Добавлено в историю: ${out.n.length}. Всего: ${h.length}.`;hinfo()};
+$('xl').onclick=()=>{const w=XLSX.utils.book_new();let rows=rowsOut(out.n);
+ if(reg){const old=XLSX.utils.sheet_to_json(reg.w.Sheets[reg.w.SheetNames[0]],{range:reg.t.h.length?undefined:0});rows=old.concat(rows)}
+ XLSX.utils.book_append_sheet(w,XLSX.utils.json_to_sheet(rows),'Платежи');XLSX.writeFile(w,'платежи_'+fmt(new Date())+'.xlsx')};
+function hinfo(){$('hinfo').textContent='Записей в истории: '+hist().length}hinfo();
+function wk(d){const t=new Date(d+'T00:00:00Z'),n=(t.getUTCDay()+6)%7;t.setUTCDate(t.getUTCDate()-n);const e=new Date(t);e.setUTCDate(e.getUTCDate()+6);return fmt(t)+' — '+fmt(e)}
+$('rep').onclick=()=>{const a=$('d1').value,b=$('d2').value,h=hist().filter(o=>(!a||o.date>=a)&&(!b||o.date<=b));
+ const g={};h.forEach(o=>{const k=wk(o.date)+'|'+(o.currency||'—');g[k]=g[k]||{n:0,s:0};g[k].n++;g[k].s+=+o.amount});
+ repRows=Object.keys(g).sort().map(k=>{const[p,c]=k.split('|');return{'Неделя':p,'Валюта':c,'Кол-во платежей':g[k].n,'Сумма':Math.round(g[k].s*100)/100}});
+ const p={};h.forEach(o=>{const k=(o.payer||'—')+'|'+(o.currency||'—');p[k]=(p[k]||0)+ +o.amount});
+ const top=Object.entries(p).sort((x,y)=>y[1]-x[1]).slice(0,10).map(([k,v])=>{const[n,c]=k.split('|');return{'Неделя':'ТОП плательщик: '+n,'Валюта':c,'Кол-во платежей':'','Сумма':Math.round(v*100)/100}});
+ repRows=repRows.concat(top);$('rt').innerHTML=repRows.length?'<tr>'+Object.keys(repRows[0]).map(k=>`<th>${k}</th>`).join('')+'</tr>'+repRows.map(r=>'<tr>'+Object.values(r).map(v=>`<td>${typeof v==='number'?v.toLocaleString('ru'):v}</td>`).join('')+'</tr>').join(''):'<tr><td>Нет данных за период</td></tr>'};
+$('rx').onclick=()=>{if(!repRows.length)$('rep').click();const w=XLSX.utils.book_new();XLSX.utils.book_append_sheet(w,XLSX.utils.json_to_sheet(repRows),'Отчет');XLSX.writeFile(w,'отчет_'+fmt(new Date())+'.xlsx')};
+$('hx').onclick=()=>{const w=XLSX.utils.book_new();XLSX.utils.book_append_sheet(w,XLSX.utils.json_to_sheet(rowsOut(hist())),'История');XLSX.writeFile(w,'история_платежей.xlsx')};
+$('hc').onclick=()=>{if(confirm('Удалить всю историю обработанных платежей?')){save([]);hinfo()}};
+</script></body></html>
